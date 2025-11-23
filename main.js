@@ -133,12 +133,20 @@ async function loadNFTs() {
       card.querySelector(".list-btn").onclick = async (ev) => {
         ev.target.disabled = true;
         const priceInput = card.querySelector(".price-input");
-        const price = parseFloat(priceInput.value);
-        if (!price || isNaN(price) || price <= 0) {
+        let priceStr = priceInput.value?.trim();
+        if (!priceStr) {
+          notify("Qiymət boşdur, listing ləğv edildi.");
+          ev.target.disabled = false;
+          return;
+        }
+
+        let price = parseFloat(priceStr);
+        if (isNaN(price) || price <= 0) {
           notify("Qiymət düzgün deyil, listing ləğv edildi.");
           ev.target.disabled = false;
           return;
         }
+
         await listNFT(tokenid, price, card).catch(console.error);
         ev.target.disabled = false;
       };
@@ -156,14 +164,11 @@ window.addEventListener("scroll", () => {
     loadNFTs();
 });
 
-// helper: convert ethers BigNumber and other non-serializable to safe JSON
 function orderToJsonSafe(obj) {
   return JSON.parse(JSON.stringify(obj, (k, v) => {
-    // ethers BigNumber
     if (v && typeof v === "object" && v._hex && typeof v.toString === "function") {
       return v.toString();
     }
-    // functions / symbols / undefined -> drop
     if (typeof v === "function" || typeof v === "symbol" || typeof v === "undefined") return undefined;
     return v;
   }));
@@ -181,18 +186,10 @@ async function buyNFT(nftRecord) {
     const buyer = await signer.getAddress();
     notify("Transaction göndərilir...");
 
-    // ensure rawOrder is in the format seaport wants (object)
-    // seaport.fulfillOrder expects { order, accountAddress }
     const result = await seaport.fulfillOrder({ order: rawOrder, accountAddress: buyer });
-    // execute actions (some versions return tx on executeAllActions)
     const txResponse = await (result.executeAllActions ? result.executeAllActions() : (result.execute ? result.execute() : null));
     if (!txResponse) throw new Error("Fulfill execute nəticəsi alınmadı");
-    // txResponse might already be a sent tx or be a result wrapper
-    if (txResponse.wait) {
-      await txResponse.wait();
-    } else if (txResponse.transactionHash) {
-      // fallback: nothing to do
-    }
+    if (txResponse.wait) await txResponse.wait();
 
     notify("NFT alındı! ✅");
 
@@ -210,7 +207,6 @@ async function buyNFT(nftRecord) {
       }),
     });
 
-    // refresh UI
     loadedCount = 0;
     allNFTs = [];
     marketplaceDiv.innerHTML = "";
@@ -255,7 +251,6 @@ async function listNFT(tokenid, price, card) {
 
   notify("Seaport order yaradılır...");
 
-  // Build complete order object for Seaport v2-compatible createOrder
   const startTime = Math.floor(Date.now() / 1000).toString();
   const endTime = (Math.floor(Date.now() / 1000) + 86400 * 30).toString();
 
@@ -263,7 +258,7 @@ async function listNFT(tokenid, price, card) {
     offerer: seller,
     offer: [
       {
-        itemType: 2, // ERC721
+        itemType: 2,
         token: NFT_CONTRACT_ADDRESS,
         identifierOrCriteria: tokenid.toString(),
         startAmount: "1",
@@ -272,7 +267,7 @@ async function listNFT(tokenid, price, card) {
     ],
     consideration: [
       {
-        itemType: 0, // Ether/native
+        itemType: 0,
         token: "0x0000000000000000000000000000000000000000",
         identifierOrCriteria: "0",
         startAmount: priceWei.toString(),
@@ -282,23 +277,19 @@ async function listNFT(tokenid, price, card) {
     ],
     startTime: startTime,
     endTime: endTime,
-    orderType: 0, // FULL_OPEN
+    orderType: 0,
     zone: "0x0000000000000000000000000000000000000000",
     conduitKey: "0x0000000000000000000000000000000000000000000000000000000000000000",
     salt: ethers.utils.hexlify(ethers.utils.randomBytes(32)),
   };
 
   try {
-    // create order via seaport
     const orderResult = await seaport.createOrder(createReq);
-    // executeAllActions will prompt signature and return signed order object depending on SDK version
     const signed = await (orderResult.executeAllActions ? orderResult.executeAllActions() : (orderResult.execute ? orderResult.execute() : orderResult));
-    // order may be nested: try to find the plain order object
     const signedOrder = signed.order ? signed.order : (signed?.signedOrder ? signed.signedOrder : signed);
 
     const plainOrderJSON = orderToJsonSafe(signedOrder || signed);
 
-    // compute orderHash if present or fallback
     let orderHash = plainOrderJSON.orderHash || plainOrderJSON.hash || plainOrderJSON.orderHashHex || null;
     if (!orderHash) {
       try {
@@ -335,7 +326,6 @@ async function listNFT(tokenid, price, card) {
     card.querySelector(".price").textContent = `Qiymət: ${price} APE`;
     notify(`NFT #${tokenid} list olundu — ${price} APE`);
 
-    // refresh UI
     loadedCount = 0;
     allNFTs = [];
     marketplaceDiv.innerHTML = "";
