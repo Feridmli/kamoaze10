@@ -42,7 +42,7 @@ app.get("/", (req, res) => {
 // ---------------- Status ----------------
 app.get("/api/status", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-// ---------------- NFT List ----------------
+// ---------------- NFT List (from metadata) ----------------
 app.get("/api/nfts", async (req, res) => {
   try {
     const { data, error } = await supabase.from("metadata").select("*").order("tokenid", { ascending: true });
@@ -68,15 +68,15 @@ app.post("/api/order", async (req, res) => {
       status = "active",
     } = req.body;
 
-    // Məcburi sahələri yoxla
-    if (!seller_address || !seaport_order || !order_hash) {
-      return res.status(400).json({ success: false, error: "Missing seller_address, seaport_order or order_hash" });
+    if (!tokenid || !seller_address || !seaport_order || !order_hash) {
+      return res.status(400).json({ success: false, error: "Missing tokenid, seller_address, seaport_order or order_hash" });
     }
 
     const id = nanoid();
     const now = new Date().toISOString();
 
-    const { error } = await supabase.from("orders").upsert(
+    // Upsert into orders table (use order_hash as conflict key)
+    const { error: orderError } = await supabase.from("orders").upsert(
       {
         id,
         tokenid: tokenid?.toString() || null,
@@ -96,7 +96,31 @@ app.post("/api/order", async (req, res) => {
       { onConflict: "order_hash" }
     );
 
-    if (error) throw error;
+    if (orderError) {
+      console.error("orders upsert error:", orderError);
+      throw orderError;
+    }
+
+    // ALSO upsert into metadata table so frontend loadNFTs() shows updated price + seaport_order
+    const metaRow = {
+      tokenid: tokenid?.toString() || null,
+      price: price || null,
+      nft_contract: process.env.NFT_CONTRACT_ADDRESS,
+      marketplace_contract: process.env.SEAPORT_CONTRACT_ADDRESS,
+      buyer_address: null,
+      seaport_order,
+      order_hash,
+      on_chain: false,
+      updatedat: now,
+      // don't overwrite name/image if already present (upsert will replace row unless we fetch first; but we'll upsert to ensure price/order present)
+    };
+
+    const { error: metaError } = await supabase.from("metadata").upsert(metaRow, { onConflict: "tokenid" });
+
+    if (metaError) {
+      console.warn("metadata upsert warning:", metaError);
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error("POST /api/order error:", err);
@@ -123,7 +147,7 @@ app.get("/api/orders", async (req, res) => {
 // ---------------- Buy Callback ----------------
 app.post("/api/buy", async (req, res) => {
   try {
-    const { order_hash, buyer_address } = req.body;
+    const { order_hash, buyer_address, tokenid } = req.body;
     if (!order_hash || !buyer_address) {
       return res.status(400).json({ success: false, error: "Missing order_hash or buyer_address" });
     }
@@ -139,7 +163,20 @@ app.post("/api/buy", async (req, res) => {
       .select();
 
     if (error) throw error;
-    res.json({ success: true, order: data[0] });
+
+    // also update metadata buyer_address and on_chain
+    await supabase.from("metadata")
+      .update({ buyer_address: buyer_address.toLowerCase(), on_chain: true, updatedat: new Date().toISOString() })
+      .eq("order_hash", order_hash);
+
+    // as fallback update by tokenid if order_hash linking failed
+    if ((!data || data.length === 0) && tokenid) {
+      await supabase.from("metadata")
+        .update({ buyer_address: buyer_address.toLowerCase(), on_chain: true, updatedat: new Date().toISOString() })
+        .eq("tokenid", tokenid.toString());
+    }
+
+    res.json({ success: true, order: data && data[0] ? data[0] : null });
   } catch (err) {
     console.error("POST /api/buy error:", err);
     res.status(500).json({ success: false, error: "Server error" });
