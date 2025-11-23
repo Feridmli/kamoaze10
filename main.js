@@ -2,9 +2,9 @@
 import { ethers } from "ethers";
 import { Seaport } from "@opensea/seaport-js";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "https://kamoaze10.onrender.com";
-const NFT_CONTRACT_ADDRESS = import.meta.env.VITE_NFT_CONTRACT || "0x54a88333F6e7540eA982261301309048aC431eD5";
-const SEAPORT_CONTRACT_ADDRESS = import.meta.env.VITE_SEAPORT_CONTRACT || "0x0000000000000068F116a894984e2DB1123eB395";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || window?.__BACKEND_URL__ || "https://kamoaze10.onrender.com";
+const NFT_CONTRACT_ADDRESS = import.meta.env.VITE_NFT_CONTRACT || window?.__NFT_CONTRACT__ || "0x54a88333F6e7540eA982261301309048aC431eD5";
+const SEAPORT_CONTRACT_ADDRESS = import.meta.env.VITE_SEAPORT_CONTRACT || window?.__SEAPORT_CONTRACT__ || "0x0000000000000068F116a894984e2DB1123eB395";
 
 const APECHAIN_ID = 33139;
 const APECHAIN_ID_HEX = "0x8173";
@@ -130,18 +130,28 @@ async function loadNFTs() {
         ev.target.disabled = false;
       };
 
+      // ✅ List düyməsi BigNumber xətasından təmizlənmiş
       card.querySelector(".list-btn").onclick = async (ev) => {
         ev.target.disabled = true;
         const priceInput = card.querySelector(".price-input");
-        let priceStr = priceInput.value?.trim();
+        const priceStr = priceInput.value?.trim();
 
-        if (!priceStr || isNaN(priceStr) || parseFloat(priceStr) <= 0) {
-          notify("Qiymət düzgün deyil, listing ləğv edildi.");
+        if (!priceStr) {
+          notify("Qiymət boşdur, listing ləğv edildi.");
           ev.target.disabled = false;
           return;
         }
 
-        await listNFT(tokenid, priceStr, card).catch(console.error);
+        let priceWei;
+        try {
+          priceWei = ethers.utils.parseEther(priceStr);
+        } catch (err) {
+          notify("Qiymət düzgün formatda deyil, listing ləğv edildi.");
+          ev.target.disabled = false;
+          return;
+        }
+
+        await listNFT(tokenid, priceWei, card).catch(console.error);
         ev.target.disabled = false;
       };
     }
@@ -196,7 +206,7 @@ async function buyNFT(nftRecord) {
         marketplace_contract: SEAPORT_CONTRACT_ADDRESS,
         buyer_address: buyer,
         seaport_order: rawOrder,
-        order_hash: nftRecord.order_hash || rawOrder.orderHash || rawOrder.hash || null,
+        order_hash: nftRecord.order_hash || nftRecord.orderHash || rawOrder.orderHash || rawOrder.hash || null,
         on_chain: true,
       }),
     });
@@ -212,7 +222,7 @@ async function buyNFT(nftRecord) {
 }
 
 // ---------------- LIST NFT ----------------
-async function listNFT(tokenid, priceStr, card) {
+async function listNFT(tokenid, price, card) {
   if (!signer || !seaport) return alert("Cüzdan qoşulmayıb!");
   const seller = (await signer.getAddress()).toLowerCase();
 
@@ -235,8 +245,7 @@ async function listNFT(tokenid, priceStr, card) {
     return alert("Sahiblik məlum olmadı (token mövcud deyil və ya RPC xətası).");
   }
 
-  const priceWei = ethers.utils.parseEther(priceStr);
-
+  const priceWei = price; // artıq BigNumber
   const approved = await nftContract.isApprovedForAll(seller, SEAPORT_CONTRACT_ADDRESS);
   if (!approved) {
     notify("Approve göndərilir...");
@@ -252,10 +261,23 @@ async function listNFT(tokenid, priceStr, card) {
   const createReq = {
     offerer: seller,
     offer: [
-      { itemType: 2, token: NFT_CONTRACT_ADDRESS, identifierOrCriteria: tokenid.toString(), startAmount: "1", endAmount: "1" },
+      {
+        itemType: 2,
+        token: NFT_CONTRACT_ADDRESS,
+        identifierOrCriteria: tokenid.toString(),
+        startAmount: "1",
+        endAmount: "1",
+      },
     ],
     consideration: [
-      { itemType: 0, token: "0x0000000000000000000000000000000000000000", identifierOrCriteria: "0", startAmount: priceWei.toString(), endAmount: priceWei.toString(), recipient: seller },
+      {
+        itemType: 0,
+        token: "0x0000000000000000000000000000000000000000",
+        identifierOrCriteria: "0",
+        startAmount: priceWei.toString(),
+        endAmount: priceWei.toString(),
+        recipient: seller,
+      },
     ],
     startTime,
     endTime,
@@ -271,8 +293,17 @@ async function listNFT(tokenid, priceStr, card) {
     const signedOrder = signed.order ? signed.order : (signed?.signedOrder ? signed.signedOrder : signed);
 
     const plainOrderJSON = orderToJsonSafe(signedOrder || signed);
-    let orderHash = plainOrderJSON.orderHash || plainOrderJSON.hash || null;
-    if (!orderHash) orderHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(JSON.stringify(plainOrderJSON)));
+
+    let orderHash = plainOrderJSON.orderHash || plainOrderJSON.hash || plainOrderJSON.orderHashHex || null;
+    if (!orderHash) {
+      try {
+        const jsonStr = JSON.stringify(plainOrderJSON);
+        orderHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(jsonStr));
+      } catch (e) {
+        console.warn("orderHash alınmadı, fallback uğursuz:", e.message);
+        orderHash = (Date.now().toString(36) + Math.random().toString(36).slice(2, 9));
+      }
+    }
 
     notify("Order backend-ə göndərilir...");
     const res = await fetch(`${BACKEND_URL}/api/order`, {
@@ -280,7 +311,7 @@ async function listNFT(tokenid, priceStr, card) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tokenid,
-        price: priceStr,
+        price: ethers.utils.formatEther(priceWei), // frontend üçün readable qiymət
         nft_contract: NFT_CONTRACT_ADDRESS,
         marketplace_contract: SEAPORT_CONTRACT_ADDRESS,
         seller_address: seller,
@@ -296,8 +327,8 @@ async function listNFT(tokenid, priceStr, card) {
     const j = await res.json();
     if (!j.success) return alert("Backend order-u qəbul etmədi: " + (j.error || "unknown"));
 
-    card.querySelector(".price").textContent = `Qiymət: ${priceStr} APE`;
-    notify(`NFT #${tokenid} list olundu — ${priceStr} APE`);
+    card.querySelector(".price").textContent = `Qiymət: ${ethers.utils.formatEther(priceWei)} APE`;
+    notify(`NFT #${tokenid} list olundu — ${ethers.utils.formatEther(priceWei)} APE`);
 
     loadedCount = 0;
     allNFTs = [];
