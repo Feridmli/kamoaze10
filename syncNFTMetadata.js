@@ -35,7 +35,7 @@ async function processNFT(tokenid) {
         success = true;
         break;
       } catch (err) {
-        if (err.message.includes("owner query for nonexistent token")) return;
+        if (err.message && err.message.includes("owner query for nonexistent token")) return;
         provider = getProvider();
         nftContract = new ethers.Contract(NFT_CONTRACT_ADDRESS, nftABI, provider);
       }
@@ -44,12 +44,17 @@ async function processNFT(tokenid) {
 
     const httpURI = convertIPFStoHTTP(tokenURI);
     let name = null;
-    try { const metadataRes = await fetch(httpURI); const metadata = await metadataRes.json(); name = metadata.name || `Bear #${tokenid}`; } 
-    catch { name = `Bear #${tokenid}`; }
+    let image = null;
+    try {
+      const metadataRes = await fetch(httpURI);
+      const metadata = await metadataRes.json();
+      name = metadata.name || `Bear #${tokenid}`;
+      image = metadata.image || httpURI;
+    } catch { name = `Bear #${tokenid}`; image = httpURI; }
 
     const now = new Date().toISOString();
     await supabase.from("metadata").upsert(
-      { tokenid: tokenid.toString(), nft_contract: NFT_CONTRACT_ADDRESS, marketplace_contract: MARKETPLACE_CONTRACT_ADDRESS, buyer_address: owner.toLowerCase(), seaport_order: null, order_hash: null, on_chain: true, name, image: httpURI, createdat: now, updatedat: now },
+      { tokenid: tokenid.toString(), nft_contract: NFT_CONTRACT_ADDRESS, marketplace_contract: MARKETPLACE_CONTRACT_ADDRESS, buyer_address: owner.toLowerCase(), seaport_order: null, order_hash: null, on_chain: true, name, image, createdat: now, updatedat: now },
       { onConflict: "tokenid" }
     );
 
